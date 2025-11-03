@@ -1,0 +1,3 @@
+#/bin/bash
+
+# Creating docker-images from Dockerfiles...
