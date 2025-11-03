@@ -10,11 +10,12 @@ echo "  Verificando dependências do sistema"
 echo "========================================="
 
 echo "Passos que serão executados:"
-echo "  1. Verificar e instalar Git"
-echo "  2. Verificar e instalar Java (OpenJDK 17)"
-echo "  3. Verificar e instalar NodeJS (LTS)"
-echo "  4. Verificar e instalar MySQL"
-echo "  5. Verificar e instalar Docker"
+echo "  1.1. Verificar e instalar Git"
+echo "  1.2. Verificar e instalar Java (OpenJDK 17)"
+echo "  1.3. Verificar e instalar NodeJS (LTS)"
+echo "  1.4. Verificar e instalar MySQL"
+echo "  1.5. Verificar e instalar Docker"
+echo "  1.6. Resumo"
 
 # Checking git
 echo "[-] Verificando Git..."

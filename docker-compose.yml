@@ -1,0 +1,65 @@
+version: "3.8"
+
+services:
+  mysql:
+    image: mysql-basilios
+    container_name: mysql-basilios
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: basilios_db
+      MYSQL_USER: basilios
+      MYSQL_PASSWORD: basilios123
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    networks:
+      - basilios-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  java:
+    image: java-basilios
+    container_name: java-basilios
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/basilios_db
+      SPRING_DATASOURCE_USERNAME: basilios
+      SPRING_DATASOURCE_PASSWORD: basilios123
+    networks:
+      - basilios-network
+
+  nodejs:
+    image: nodejs-basilios
+    container_name: nodejs-basilios
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    depends_on:
+      - mysql
+      - java
+    environment:
+      DATABASE_HOST: mysql
+      DATABASE_PORT: 3306
+      DATABASE_NAME: basilios_db
+      DATABASE_USER: basilios
+      DATABASE_PASSWORD: basilios123
+      API_JAVA_URL: http://java:8080
+    networks:
+      - basilios-network
+
+networks:
+  basilios-network:
+    driver: bridge
+
+volumes:
+  mysql-data:
