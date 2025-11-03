@@ -10,16 +10,16 @@ chmod +x libs-check.sh
 ./libs-check.sh
 
 # Creating docker-images from Dockerfiles...
-echo "Creating NodeJS docker-image..."
+echo "Criando imagem do NodeJS..."
 docker build -t nodejs-basilios ./node > /dev/null
-echo "NodeJS image succesfully created"
+echo "docker-image do NodeJS criada"
 
-echo "Creating Java docker-image..."
+echo "Criando imagem do Java"
 docker build -t java-basilios ./java > /dev/null
-echo "Java image succesfully created"
+echo "docker-image do Java criada"
 
-echo "Creating MySQL docker-image..."
+echo "Criando imagem do MySQL"
 docker build -t mysql-basilios ./mysql > /dev/null
-echo "MySQL image succesfully created"
+echo "docker-image do MySQL criada"
 
 # Iniciando os containerns com docker-compose
