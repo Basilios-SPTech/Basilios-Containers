@@ -12,9 +12,6 @@ echo "  4. Criar docker-image de MySQL"
 echo "  5. Iniciar os containers com o docker-compose"
 echo "  6. Resumo"
 
-chmod +x libs-check.sh
-./libs-check.sh
-
 # Creating docker-images from Dockerfiles...
 echo "Criando imagem do NodeJS..."
 docker build -t nodejs-basilios ./node > /dev/null
