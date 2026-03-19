@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Cloning our project inside the container
-if ls | grep -q "nome do projeto"; then
+if ls | grep -q "Basilios---Projeto-de-PI-"; then
     echo 'Projeto encontrado...'
 else
     echo 'Projeto não encontrado, clonando ele do github'
@@ -14,4 +14,4 @@ echo 'Instalando dependências'
 npm install
 
 echo 'Iniciando projeto'
-npm run dev
+npm run dev -- --host

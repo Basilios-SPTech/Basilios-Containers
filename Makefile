@@ -1,4 +1,4 @@
-.PHONY: setup-perms libs-check docker-init drop-containers clean
+.PHONY: setup-perms libs-check docker-init drop-containers clean build-email-api logs-email-api
 
 
 help:
@@ -10,7 +10,15 @@ help:
 	@echo "  make docker-init      - Inicializa containers Docker"
 	@echo "  make drop-containers  - Remove todos os containers"
 	@echo "  make clean            - Limpa arquivos temporários"
+	@echo "  make build-email-api  - Rebuild imagem do Email API"
+	@echo "  make logs-email-api   - Ver logs do Email API"
 	@echo "======================================"
+
+build-email-api:
+	docker build -t email-api-basilios ./email-api
+
+logs-email-api:
+	docker-compose logs -f email-api
 
 setup-perms:
 	./perms.sh

@@ -8,9 +8,8 @@ COPY . .
 # Installing Maven and building the project
 RUN apk add --no-cache maven && mvn package -DskipTests
 
-# Exposing port 8080
-# WARN: It should not be here, but we gonna leave it here until everything is okay
-EXPOSE 8080
+# Exposing port 8081
+EXPOSE 8081
 
 # Running our app
 CMD ["sh", "-c", "java -jar target/*.jar"]

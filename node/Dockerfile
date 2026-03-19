@@ -6,3 +6,5 @@ RUN apk add --no-cache git
 
 # Copying our shell
 COPY node-starter.sh .
+
+CMD ["sh", "node-starter.sh"]
