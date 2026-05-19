@@ -1,0 +1,236 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Basilios CloudFormation Template - Web, Proxy, Backend e Banco de Dados
+
+Parameters:
+  InstanceType:
+    Description: EC2 Instance Type
+    Type: String
+    Default: t3.micro
+    AllowedValues:
+      - t3.micro
+      - t2.micro
+
+  MyIP:
+    Description: Seu IP em formato CIDR
+    Type: String
+    Default: 0.0.0.0/0
+    AllowedPattern: '^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$'
+
+  VPCId:
+    Description: VPC ID
+    Type: AWS::EC2::VPC::Id
+
+  PublicSubnetId:
+    Description: Public Subnet ID
+    Type: AWS::EC2::Subnet::Id
+
+  PrivateSubnetId:
+    Description: Private Subnet ID
+    Type: AWS::EC2::Subnet::Id
+
+Resources:
+  # Security Groups
+  WebServerSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: SG do Web Server - HTTP publico
+      VpcId: !Ref VPCId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref MyIP
+      Tags:
+        - Key: Name
+          Value: WebServerSG
+
+  ProxySG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: SG do Proxy - recebe do WebServer e repassa ao Backend
+      VpcId: !Ref VPCId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref WebServerSG
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref MyIP
+      Tags:
+        - Key: Name
+          Value: ProxySG
+
+  BackendSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: SG do Backend Java - recebe apenas do Proxy
+      VpcId: !Ref VPCId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          SourceSecurityGroupId: !Ref ProxySG
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref MyIP
+      Tags:
+        - Key: Name
+          Value: BackendSG
+
+  DatabaseSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: SG do MySQL - recebe apenas do Backend
+      VpcId: !Ref VPCId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref BackendSG
+      Tags:
+        - Key: Name
+          Value: DatabaseSG
+
+  # EC2 - Web Server (Subnet Publica)
+  WebServer:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-091138d0f0d41ff90  # AMI Ubuntu
+      InstanceType: !Ref InstanceType
+      SubnetId: !Ref PublicSubnetId
+      SecurityGroupIds:
+        - !Ref WebServerSG
+      Tags:
+        - Key: Name
+          Value: WebServer
+      UserData: !Base64 |
+        #!/bin/bash
+        apt update -y
+        apt install -y nginx
+        systemctl start nginx
+        systemctl enable nginx
+        echo "<html><body><h1>Corinthians!!</h1></body></html>" > /usr/share/nginx/html/index.html
+
+  # EC2 - Proxy (Subnet Publica)
+  ProxyServer:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-091138d0f0d41ff90
+      InstanceType: !Ref InstanceType
+      SubnetId: !Ref PublicSubnetId
+      SecurityGroupIds:
+        - !Ref ProxySG
+      Tags:
+        - Key: Name
+          Value: ProxyServer
+      UserData: !Base64 |
+        #!/bin/bash
+        apt update -y
+        apt install -y nginx
+        systemctl start nginx
+        systemctl enable nginx
+        # Configura o NGINX como reverse proxy para o backend
+        cat > /etc/nginx/sites-available/proxy.conf <<EOF
+        server {
+            listen 80;
+            location / {
+                proxy_pass http://backend;
+            }
+        }
+        upstream backend {
+            server ${BackendServer1.PrivateIp}:8080;
+            server ${BackendServer2.PrivateIp}:8080;
+        }
+        EOF
+        ln -s /etc/nginx/sites-available/proxy.conf /etc/nginx/sites-enabled/
+        nginx -t && systemctl reload nginx
+
+  # EC2 - Backend 1 com Java 17 (Subnet Privada)
+  BackendServer1:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-091138d0f0d41ff90
+      InstanceType: !Ref InstanceType
+      SubnetId: !Ref PrivateSubnetId
+      SecurityGroupIds:
+        - !Ref BackendSG
+      Tags:
+        - Key: Name
+          Value: BackendServer1
+      UserData: !Base64 |
+        #!/bin/bash
+        apt update -y
+        apt install -y openjdk-17-jdk
+        java -version
+
+  # EC2 - Backend 2 com Java 17 (Subnet Privada)
+  BackendServer2:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-091138d0f0d41ff90
+      InstanceType: !Ref InstanceType
+      SubnetId: !Ref PrivateSubnetId
+      SecurityGroupIds:
+        - !Ref BackendSG
+      Tags:
+        - Key: Name
+          Value: BackendServer2
+      UserData: !Base64 |
+        #!/bin/bash
+        apt update -y
+        apt install -y openjdk-17-jdk
+        java -version
+
+  # EC2 - Banco de Dados MySQL (Subnet Privada)
+  DatabaseServer:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-091138d0f0d41ff90
+      InstanceType: !Ref InstanceType
+      SubnetId: !Ref PrivateSubnetId
+      SecurityGroupIds:
+        - !Ref DatabaseSG
+      Tags:
+        - Key: Name
+          Value: DatabaseServer
+      UserData: !Base64 |
+        #!/bin/bash
+        apt update -y
+        apt install -y mysql-server
+        systemctl start mysql
+        systemctl enable mysql
+
+Outputs:
+  WebsiteURL:
+    Value: !Join
+      - ''
+      - - http://
+        - !GetAtt WebServer.PublicDnsName
+    Description: Website URL
+
+  ProxyPublicIP:
+    Description: IP publico do Proxy
+    Value: !GetAtt ProxyServer.PublicIp
+
+  BackendServer1PrivateIP:
+    Description: IP privado do Backend 1
+    Value: !GetAtt BackendServer1.PrivateIp
+
+  BackendServer2PrivateIP:
+    Description: IP privado do Backend 2
+    Value: !GetAtt BackendServer2.PrivateIp
+
+  DatabasePrivateIP:
+    Description: IP privado do Banco de Dados
+    Value: !GetAtt DatabaseServer.PrivateIp
