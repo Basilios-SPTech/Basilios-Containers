@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: 2010-09-09
-Description: Basilios CloudFormation Template - Web, Proxy, Backend e Banco de Dados
+Description: Basilios CloudFormation Template - Web, Proxy (DB), Backend e Banco de Dados
 
 Parameters:
   InstanceType:
@@ -9,6 +9,11 @@ Parameters:
     AllowedValues:
       - t3.micro
       - t2.micro
+
+  KeyPairName:
+    Description: Nome da EC2 Key Pair para SSH
+    Type: String
+    Default: basilios-key
 
   MyIP:
     Description: Seu IP em formato CIDR
@@ -25,15 +30,43 @@ Parameters:
     Type: AWS::EC2::Subnet::Id
 
   PrivateSubnetId:
-    Description: Private Subnet ID
+    Description: Private Subnet ID (apenas para Proxy e Database)
     Type: AWS::EC2::Subnet::Id
 
+  # ----------------------------------------------------------------
+  # Tokens do GitHub Actions self-hosted runner
+  # Gere em: Settings > Actions > Runners > New self-hosted runner
+  # ----------------------------------------------------------------
+  GitHubRunnerTokenWeb:
+    Description: Token de registro do runner GitHub Actions para o WebServer
+    Type: String
+    NoEcho: true
+
+  GitHubRunnerTokenBackend1:
+    Description: Token de registro do runner GitHub Actions para o BackendServer1
+    Type: String
+    NoEcho: true
+
+  GitHubRunnerTokenBackend2:
+    Description: Token de registro do runner GitHub Actions para o BackendServer2
+    Type: String
+    NoEcho: true
+
+  GitHubRepoUrl:
+    Description: "URL do repositório GitHub (ex: https://github.com/org/repo)"
+    Type: String
+
 Resources:
-  # Security Groups
+
+  # ================================================================
+  # SECURITY GROUPS
+  # ================================================================
+
+  # Web Server: HTTP/HTTPS público + SSH
   WebServerSG:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: SG do Web Server - HTTP publico
+      GroupDescription: SG do Web Server - HTTP publico (React)
       VpcId: !Ref VPCId
       SecurityGroupIngress:
         - IpProtocol: tcp
@@ -52,34 +85,18 @@ Resources:
         - Key: Name
           Value: WebServerSG
 
-  ProxySG:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: SG do Proxy - recebe do WebServer e repassa ao Backend
-      VpcId: !Ref VPCId
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 80
-          ToPort: 80
-          SourceSecurityGroupId: !Ref WebServerSG
-        - IpProtocol: tcp
-          FromPort: 22
-          ToPort: 22
-          CidrIp: !Ref MyIP
-      Tags:
-        - Key: Name
-          Value: ProxySG
-
+  # Backend: porta 8080 pública (Internet → Backend direto) + SSH
+  # O WebServer também aponta para os Backends via proxy_pass no nginx do WebServer
   BackendSG:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: SG do Backend Java - recebe apenas do Proxy
+      GroupDescription: SG dos Backends Java - porta 8080 acessivel pelo WebServer e internet
       VpcId: !Ref VPCId
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 8080
           ToPort: 8080
-          SourceSecurityGroupId: !Ref ProxySG
+          SourceSecurityGroupId: !Ref WebServerSG
         - IpProtocol: tcp
           FromPort: 22
           ToPort: 22
@@ -88,116 +105,341 @@ Resources:
         - Key: Name
           Value: BackendSG
 
-  DatabaseSG:
+  # Proxy (subnet privada): recebe apenas dos Backends na 8080 e repassa ao MySQL
+  ProxySG:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: SG do MySQL - recebe apenas do Backend
+      GroupDescription: SG do Proxy DB - recebe dos Backends e repassa ao MySQL
       VpcId: !Ref VPCId
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 3306
           ToPort: 3306
           SourceSecurityGroupId: !Ref BackendSG
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref MyIP
+      Tags:
+        - Key: Name
+          Value: ProxySG
+
+  # Database: recebe APENAS do Proxy
+  DatabaseSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: SG do MySQL - recebe apenas do ProxyDB
+      VpcId: !Ref VPCId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref ProxySG
       Tags:
         - Key: Name
           Value: DatabaseSG
 
-  # EC2 - Web Server (Subnet Publica)
+  # ================================================================
+  # EC2 - WEB SERVER (Subnet Pública) — serve o build do React
+  # + self-hosted runner para o GitHub Actions de deploy React
+  # ================================================================
   WebServer:
     Type: AWS::EC2::Instance
     Properties:
-      ImageId: ami-091138d0f0d41ff90  # AMI Ubuntu
+      ImageId: ami-091138d0f0d41ff90
       InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyPairName
       SubnetId: !Ref PublicSubnetId
       SecurityGroupIds:
         - !Ref WebServerSG
       Tags:
         - Key: Name
           Value: WebServer
-      UserData: !Base64 |
-        #!/bin/bash
-        apt update -y
-        apt install -y nginx
-        systemctl start nginx
-        systemctl enable nginx
-        echo "<html><body><h1>Corinthians!!</h1></body></html>" > /usr/share/nginx/html/index.html
+      UserData: !Base64
+        Fn::Sub: |
+          #!/bin/bash
+          set -e
 
-  # EC2 - Proxy (Subnet Publica)
-  ProxyServer:
-    Type: AWS::EC2::Instance
-    Properties:
-      ImageId: ami-091138d0f0d41ff90
-      InstanceType: !Ref InstanceType
-      SubnetId: !Ref PublicSubnetId
-      SecurityGroupIds:
-        - !Ref ProxySG
-      Tags:
-        - Key: Name
-          Value: ProxyServer
-      UserData: !Base64 |
-        #!/bin/bash
-        apt update -y
-        apt install -y nginx
-        systemctl start nginx
-        systemctl enable nginx
-        # Configura o NGINX como reverse proxy para o backend
-        cat > /etc/nginx/sites-available/proxy.conf <<EOF
-        server {
-            listen 80;
-            location / {
-                proxy_pass http://backend;
-            }
-        }
-        upstream backend {
-            server ${BackendServer1.PrivateIp}:8080;
-            server ${BackendServer2.PrivateIp}:8080;
-        }
-        EOF
-        ln -s /etc/nginx/sites-available/proxy.conf /etc/nginx/sites-enabled/
-        nginx -t && systemctl reload nginx
+          # --- Nginx para servir o build do React ---
+          apt update -y
+          apt install -y nginx curl tar git
 
-  # EC2 - Backend 1 com Java 17 (Subnet Privada)
+          # Pasta onde o CI vai depositar o build
+          mkdir -p /var/www/basilios
+          chown -R ubuntu:ubuntu /var/www/basilios
+
+          # Config nginx: servir SPA React com fallback para index.html
+          cat > /etc/nginx/sites-available/basilios.conf <<'NGINXEOF'
+          server {
+              listen 80 default_server;
+              root /var/www/basilios;
+              index index.html;
+
+              # Rota da API: faz proxy para os backends na porta 8080
+              # Troque os IPs abaixo pelos IPs privados/públicos dos backends
+              location /api/ {
+                  proxy_pass http://backends;
+                  proxy_http_version 1.1;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+              }
+
+              # React SPA: qualquer rota desconhecida retorna index.html
+              location / {
+                  try_files $uri $uri/ /index.html;
+              }
+          }
+
+          upstream backends {
+              server ${BackendServer1.PublicIp}:8080;
+              server ${BackendServer2.PublicIp}:8080;
+          }
+          NGINXEOF
+
+          rm -f /etc/nginx/sites-enabled/default
+          ln -sf /etc/nginx/sites-available/basilios.conf /etc/nginx/sites-enabled/
+          nginx -t
+          systemctl enable nginx
+          systemctl start nginx
+
+          # --- GitHub Actions Self-Hosted Runner ---
+          RUNNER_VERSION="2.317.0"
+          cd /home/ubuntu
+          mkdir -p actions-runner && cd actions-runner
+
+          curl -sL "https://github.com/actions/runner/releases/download/v${!RUNNER_VERSION}/actions-runner-linux-x64-${!RUNNER_VERSION}.tar.gz" \
+            -o actions-runner.tar.gz
+          tar xzf actions-runner.tar.gz
+          rm actions-runner.tar.gz
+
+          chown -R ubuntu:ubuntu /home/ubuntu/actions-runner
+
+          # Registra o runner (sem interação)
+          sudo -u ubuntu ./config.sh \
+            --url "${GitHubRepoUrl}" \
+            --token "${GitHubRunnerTokenWeb}" \
+            --name "webserver-runner" \
+            --labels "webserver,react-deploy" \
+            --unattended \
+            --replace
+
+          # Instala e inicia como serviço systemd
+          ./svc.sh install ubuntu
+          ./svc.sh start
+
+  # ================================================================
+  # EC2 - BACKEND 1 (Subnet PÚBLICA) — Java 17 + JAR
+  # + self-hosted runner para deploy do JAR
+  # ================================================================
   BackendServer1:
     Type: AWS::EC2::Instance
     Properties:
       ImageId: ami-091138d0f0d41ff90
       InstanceType: !Ref InstanceType
-      SubnetId: !Ref PrivateSubnetId
+      KeyName: !Ref KeyPairName
+      SubnetId: !Ref PublicSubnetId   # <-- subnet pública conforme solicitado
       SecurityGroupIds:
         - !Ref BackendSG
       Tags:
         - Key: Name
           Value: BackendServer1
-      UserData: !Base64 |
-        #!/bin/bash
-        apt update -y
-        apt install -y openjdk-17-jdk
-        java -version
+      UserData: !Base64
+        Fn::Sub: |
+          #!/bin/bash
+          set -e
 
-  # EC2 - Backend 2 com Java 17 (Subnet Privada)
+          apt update -y
+          apt install -y openjdk-17-jdk curl tar git
+
+          # Pasta para o JAR e logs
+          mkdir -p /opt/basilios
+          chown -R ubuntu:ubuntu /opt/basilios
+
+          # Serviço systemd para o JAR (o CI vai sobrescrever o .jar e reiniciar)
+          cat > /etc/systemd/system/basilios-backend.service <<'SVCEOF'
+          [Unit]
+          Description=Basilios Backend Java
+          After=network.target
+
+          [Service]
+          User=ubuntu
+          WorkingDirectory=/opt/basilios
+          ExecStart=/usr/bin/java -jar /opt/basilios/app.jar
+          SuccessExitStatus=143
+          Restart=always
+          RestartSec=10
+          StandardOutput=journal
+          StandardError=journal
+
+          [Install]
+          WantedBy=multi-user.target
+          SVCEOF
+
+          systemctl daemon-reload
+          systemctl enable basilios-backend
+
+          # --- GitHub Actions Self-Hosted Runner ---
+          RUNNER_VERSION="2.317.0"
+          cd /home/ubuntu
+          mkdir -p actions-runner && cd actions-runner
+
+          curl -sL "https://github.com/actions/runner/releases/download/v${!RUNNER_VERSION}/actions-runner-linux-x64-${!RUNNER_VERSION}.tar.gz" \
+            -o actions-runner.tar.gz
+          tar xzf actions-runner.tar.gz
+          rm actions-runner.tar.gz
+
+          chown -R ubuntu:ubuntu /home/ubuntu/actions-runner
+
+          sudo -u ubuntu ./config.sh \
+            --url "${GitHubRepoUrl}" \
+            --token "${GitHubRunnerTokenBackend1}" \
+            --name "backend1-runner" \
+            --labels "backend,backend1,java-deploy" \
+            --unattended \
+            --replace
+
+          ./svc.sh install ubuntu
+          ./svc.sh start
+
+  # ================================================================
+  # EC2 - BACKEND 2 (Subnet PÚBLICA) — Java 17 + JAR
+  # + self-hosted runner para deploy do JAR
+  # ================================================================
   BackendServer2:
     Type: AWS::EC2::Instance
     Properties:
       ImageId: ami-091138d0f0d41ff90
       InstanceType: !Ref InstanceType
-      SubnetId: !Ref PrivateSubnetId
+      KeyName: !Ref KeyPairName
+      SubnetId: !Ref PublicSubnetId   # <-- subnet pública conforme solicitado
       SecurityGroupIds:
         - !Ref BackendSG
       Tags:
         - Key: Name
           Value: BackendServer2
-      UserData: !Base64 |
-        #!/bin/bash
-        apt update -y
-        apt install -y openjdk-17-jdk
-        java -version
+      UserData: !Base64
+        Fn::Sub: |
+          #!/bin/bash
+          set -e
 
-  # EC2 - Banco de Dados MySQL (Subnet Privada)
+          apt update -y
+          apt install -y openjdk-17-jdk curl tar git
+
+          mkdir -p /opt/basilios
+          chown -R ubuntu:ubuntu /opt/basilios
+
+          cat > /etc/systemd/system/basilios-backend.service <<'SVCEOF'
+          [Unit]
+          Description=Basilios Backend Java
+          After=network.target
+
+          [Service]
+          User=ubuntu
+          WorkingDirectory=/opt/basilios
+          ExecStart=/usr/bin/java -jar /opt/basilios/app.jar
+          SuccessExitStatus=143
+          Restart=always
+          RestartSec=10
+          StandardOutput=journal
+          StandardError=journal
+
+          [Install]
+          WantedBy=multi-user.target
+          SVCEOF
+
+          systemctl daemon-reload
+          systemctl enable basilios-backend
+
+          # --- GitHub Actions Self-Hosted Runner ---
+          RUNNER_VERSION="2.317.0"
+          cd /home/ubuntu
+          mkdir -p actions-runner && cd actions-runner
+
+          curl -sL "https://github.com/actions/runner/releases/download/v${!RUNNER_VERSION}/actions-runner-linux-x64-${!RUNNER_VERSION}.tar.gz" \
+            -o actions-runner.tar.gz
+          tar xzf actions-runner.tar.gz
+          rm actions-runner.tar.gz
+
+          chown -R ubuntu:ubuntu /home/ubuntu/actions-runner
+
+          sudo -u ubuntu ./config.sh \
+            --url "${GitHubRepoUrl}" \
+            --token "${GitHubRunnerTokenBackend2}" \
+            --name "backend2-runner" \
+            --labels "backend,backend2,java-deploy" \
+            --unattended \
+            --replace
+
+          ./svc.sh install ubuntu
+          ./svc.sh start
+
+  # ================================================================
+  # EC2 - PROXY DB (Subnet PRIVADA) — NGINX stream proxy MySQL
+  # Recebe conexões MySQL dos Backends e repassa ao DatabaseServer
+  # ================================================================
+  ProxyServer:
+    Type: AWS::EC2::Instance
+    DependsOn: DatabaseServer
+    Properties:
+      ImageId: ami-091138d0f0d41ff90
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyPairName
+      SubnetId: !Ref PrivateSubnetId
+      SecurityGroupIds:
+        - !Ref ProxySG
+      Tags:
+        - Key: Name
+          Value: ProxyServer-DB
+      UserData: !Base64
+        Fn::Sub: |
+          #!/bin/bash
+          set -e
+
+          apt update -y
+          # nginx com módulo stream (disponível no pacote padrão no Ubuntu 22+)
+          apt install -y nginx
+
+          # Desabilita o bloco http padrão para usar apenas stream
+          rm -f /etc/nginx/sites-enabled/default
+
+          # Config de stream TCP para MySQL (porta 3306 → banco)
+          cat > /etc/nginx/modules-enabled/stream.conf <<'STREAMEOF'
+          stream {
+              upstream mysql_backend {
+                  server ${DatabaseServer.PrivateIp}:3306;
+              }
+
+              server {
+                  listen 3306;
+                  proxy_pass mysql_backend;
+
+                  # Timeouts para conexões de banco de dados
+                  proxy_connect_timeout 5s;
+                  proxy_timeout        300s;
+              }
+          }
+          STREAMEOF
+
+          # O nginx.conf principal precisa incluir o arquivo de stream
+          # Verifica se já tem include e adiciona se não tiver
+          if ! grep -q "modules-enabled/stream.conf" /etc/nginx/nginx.conf; then
+            echo "include /etc/nginx/modules-enabled/stream.conf;" >> /etc/nginx/nginx.conf
+          fi
+
+          nginx -t
+          systemctl enable nginx
+          systemctl start nginx
+
+  # ================================================================
+  # EC2 - DATABASE MySQL (Subnet PRIVADA)
+  # ================================================================
   DatabaseServer:
     Type: AWS::EC2::Instance
     Properties:
       ImageId: ami-091138d0f0d41ff90
       InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyPairName
       SubnetId: !Ref PrivateSubnetId
       SecurityGroupIds:
         - !Ref DatabaseSG
@@ -206,31 +448,90 @@ Resources:
           Value: DatabaseServer
       UserData: !Base64 |
         #!/bin/bash
+        set -e
         apt update -y
         apt install -y mysql-server
-        systemctl start mysql
-        systemctl enable mysql
 
+        # Permite conexões remotas (vindas do Proxy)
+        sed -i 's/^bind-address\s*=.*/bind-address = 0.0.0.0/' /etc/mysql/mysql.conf.d/mysqld.cnf
+
+        systemctl enable mysql
+        systemctl start mysql
+
+        # Cria usuário da aplicação (ajuste senha conforme necessário)
+        mysql -e "CREATE USER IF NOT EXISTS 'basilios'@'%' IDENTIFIED BY 'BasiliosSenha123!';"
+        mysql -e "CREATE DATABASE IF NOT EXISTS basilios_db;"
+        mysql -e "GRANT ALL PRIVILEGES ON basilios_db.* TO 'basilios'@'%';"
+        mysql -e "FLUSH PRIVILEGES;"
+
+# ================================================================
+# OUTPUTS
+# ================================================================
 Outputs:
   WebsiteURL:
-    Value: !Join
-      - ''
-      - - http://
-        - !GetAtt WebServer.PublicDnsName
-    Description: Website URL
+    Value: !Sub "http://${WebServer.PublicDnsName}"
+    Description: URL pública do WebServer (React)
 
-  ProxyPublicIP:
-    Description: IP publico do Proxy
-    Value: !GetAtt ProxyServer.PublicIp
+  WebServerPublicIP:
+    Description: IP público do WebServer
+    Value: !GetAtt WebServer.PublicIp
+    Export:
+      Name: !Sub "${AWS::StackName}-WebServerPublicIP"
 
-  BackendServer1PrivateIP:
-    Description: IP privado do Backend 1
-    Value: !GetAtt BackendServer1.PrivateIp
+  WebServerHost:
+    Description: Host para WEBSERVER_HOST no GitHub Secret
+    Value: !GetAtt WebServer.PublicDnsName
+    Export:
+      Name: !Sub "${AWS::StackName}-WebServerHost"
 
-  BackendServer2PrivateIP:
-    Description: IP privado do Backend 2
-    Value: !GetAtt BackendServer2.PrivateIp
+  SSHCommandWeb:
+    Description: Comando SSH para o WebServer
+    Value: !Sub "ssh -i ~/basilios-key.pem ubuntu@${WebServer.PublicDnsName}"
+
+  BackendServer1PublicIP:
+    Description: IP público do BackendServer1
+    Value: !GetAtt BackendServer1.PublicIp
+    Export:
+      Name: !Sub "${AWS::StackName}-Backend1PublicIP"
+
+  BackendServer1Host:
+    Description: Host para BACKEND1_HOST no GitHub Secret
+    Value: !GetAtt BackendServer1.PublicDnsName
+    Export:
+      Name: !Sub "${AWS::StackName}-Backend1Host"
+
+  BackendServer2PublicIP:
+    Description: IP público do BackendServer2
+    Value: !GetAtt BackendServer2.PublicIp
+    Export:
+      Name: !Sub "${AWS::StackName}-Backend2PublicIP"
+
+  BackendServer2Host:
+    Description: Host para BACKEND2_HOST no GitHub Secret
+    Value: !GetAtt BackendServer2.PublicDnsName
+    Export:
+      Name: !Sub "${AWS::StackName}-Backend2Host"
+
+  ProxyDBPrivateIP:
+    Description: IP privado do Proxy DB (use como host MySQL nos Backends)
+    Value: !GetAtt ProxyServer.PrivateIp
+    Export:
+      Name: !Sub "${AWS::StackName}-ProxyDBPrivateIP"
 
   DatabasePrivateIP:
     Description: IP privado do Banco de Dados
     Value: !GetAtt DatabaseServer.PrivateIp
+
+  GitHubSecretsInfo:
+    Description: Variáveis para configurar nos Secrets do GitHub
+    Value: !Sub |
+      # Secrets necessários no GitHub Actions:
+      WEBSERVER_HOST=${WebServer.PublicDnsName}
+      BACKEND1_HOST=${BackendServer1.PublicDnsName}
+      BACKEND2_HOST=${BackendServer2.PublicDnsName}
+      # DB_HOST deve apontar para o IP privado do ProxyDB (dentro das instâncias Backend):
+      DB_HOST=${ProxyServer.PrivateIp}
+      DB_PORT=3306
+      DB_NAME=basilios_db
+      DB_USER=basilios
+      DB_PASS=BasiliosSenha123!
